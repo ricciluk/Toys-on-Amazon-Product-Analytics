@@ -9,7 +9,7 @@ Analyze toy product catalog information on Amazon including sales volume, prices
 
 #### Basic Structure
 - Data/Package Import 
-- Data Cleaning
+- Data Cleaning (Tidying the Data, String Manipulation)
 - Exploratory Analysis
 - Visualization for Story-Telling 
 - Predictive Modeling
