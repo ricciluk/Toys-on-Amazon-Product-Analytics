@@ -3,9 +3,9 @@ Analyze toy product catalog information on Amazon including sales volume, prices
 
 
 #### Business Problem
-•	What kinds of toys are most popular on Amazon?   
-•	Which brands are the most dominant?    
-•	Can you break down and predict which kinds of toys and brands get the best reviews? 
+- What kinds of toys are most popular on Amazon?   
+- Which brands are the most dominant?    
+- Can you break down and predict which kinds of toys and brands get the best reviews? 
 
 #### Basic Structure
 - Data/Package Import 
