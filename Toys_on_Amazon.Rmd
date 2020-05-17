@@ -1,0 +1,568 @@
+---
+title: "Toys on Amazon Project"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Metadata
+
+product:
+
+• price: the symbol of "£" has been removed to keep numeric variable
+
+• number_of_reviews: the "new","used" have been removed to keep numeric variable
+
+• average_review_rating: "out of 5 stars" have been removed to keep numeric variable
+
+
+
+toys_QA:(split customer_questions_and_answers)
+
+• questions: each customer question for each product
+
+• answers: the corresponding answer for each question
+
+
+
+
+review:(split customer_reviews)
+
+• title:  title for each customer review
+
+• rating: rating for each customer review
+
+• date:   the date of the customer review posted
+
+• buyer_name: the customer's name
+
+• comment: the content of the customer review
+
+
+
+
+
+category:(split amazon_category_and_sub_category)
+
+• category1-5: category and sub categories for each product
+
+
+
+
+
+sellers:(split sellers)
+
+• name:  name of the seller
+
+• price: selling price
+
+
+
+
+also_bought:
+
+• other_product1 ~ other_product12: the amazon_category_and_sub_category has been split into 12 columns, which represent the 12 product that also bought by customers.
+
+
+
+
+## Analysis Process
+```{r, results='hide', message=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(stringr)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(cli)
+library(ggcorrplot)
+library(MASS)
+library(leaps)
+library(fBasics)
+library(regclass)
+library(Metrics)
+```
+
+```{r}
+rawdata <- read.csv("Toys_Amazon.csv",encoding = "UTF-8",header=T)
+```
+
+```{r include=FALSE}
+
+#toys
+toys <- rawdata
+#remove all £ sign for price variable
+toys$price <- str_remove(toys$price,"£")
+#remove "new/used" word in number_in_stock variable
+toys$number_available_in_stock <- str_remove(toys$number_available_in_stock, "\\s")
+toys$number_available_in_stock <- str_remove(toys$number_available_in_stock, "new")
+toys$number_available_in_stock <- str_remove(toys$number_available_in_stock, "used")
+#remove "out of 5 stars" in average_review_rating
+toys$average_review_rating <- str_remove(toys$average_review_rating," out of 5 stars")
+
+#product
+product <- toys[,1:8]
+
+#toys_QA
+toys_QA <- toys[,1:8]
+toys_QA$customer_questions_and_answers <- toys$customer_questions_and_answers
+toys_QA$customer_questions_and_answers <- as.character(toys_QA$customer_questions_and_answers)
+toys_QA <- tidyr::separate_rows(toys_QA,customer_questions_and_answers,sep="\\|")
+toys_QA$customer_questions_and_answers <- str_remove(toys_QA$customer_questions_and_answers,"http://")
+toys_QA$customer_questions_and_answers <- str_remove(toys_QA$customer_questions_and_answers,"http://")
+toys_QA$customer_questions_and_answers <- str_remove(toys_QA$customer_questions_and_answers,"https://")
+toys_QA <- separate(toys_QA,customer_questions_and_answers,into=c("questions","answers"),sep="\\//")
+
+#turn into numeric variables
+toys$price <- as.numeric(as.character(toys$price))
+toys$number_available_in_stock <- as.numeric(as.character(toys$number_available_in_stock))
+toys$number_of_reviews <- as.numeric(as.character(toys$number_of_reviews))
+toys$number_of_answered_questions <- as.numeric(as.character(toys$number_of_answered_questions))
+toys<-toys[-c(2003,2004),]
+
+#review
+review <- toys[,c("uniq_id","number_of_reviews","customer_reviews")]
+review$customer_reviews<-gsub('\\|MR','MR',review$customer_reviews)
+review$customer_reviews<-gsub('\\|Dowsett','Dowsett',review$customer_reviews)
+review$customer_reviews<-gsub('\\@.*@','',review$customer_reviews)
+review$customer_reviews<-gsub('\\://','',review$customer_reviews)
+review <- tidyr::separate_rows(review,customer_reviews,sep="\\|")
+review <- separate(review,customer_reviews,into=c("title","rating","date","buyer_name","comment"),sep="\\//")
+review$buyer_name <- gsub(' on.*','',review$buyer_name)
+review$buyer_name <- gsub('\\s','',review$buyer_name)
+review$buyer_name <- gsub('By','',review$buyer_name)
+
+#category
+category <- toys[,c(1:3,9)]
+#split the category column
+category <- separate(category,amazon_category_and_sub_category,into=c("category1","category2","category3","category4","category5"),sep=">")
+
+#sellers
+sellers <- toys[,1:3]
+sellers$sellers <- toys$sellers
+#clean the sellers data
+sellers$sellers <- gsub('"','',sellers$sellers)#remove double quotation mark
+sellers$sellers <- str_remove(sellers$sellers,"\\{seller=>")
+sellers$sellers <- str_remove(sellers$sellers,"\\[")
+#split the sellers to multiple rows
+sellers <- tidyr::separate_rows(sellers,sellers,sep="\\},")
+#split the sellers column into name and price
+sellers <- separate(sellers,sellers,into=c("name","price"),sep=", Seller_price")
+#clean the columns of name and price
+sellers$name <- gsub('\\{.*>','',sellers$name)#clean the names
+sellers$price <- gsub('\\_.*>','',sellers$price) 
+sellers$price <- gsub('\\}','',sellers$price)
+sellers$price <- gsub('\\]','',sellers$price)
+sellers$price <- gsub('£','',sellers$price)
+
+sellers$manufacturer <- as.character(sellers$manufacturer)
+```
+
+
+In this CS2, several problems in the customer_review column from CS1 have been solved for modeling.
+
+1. Some customer name contains "|", which will affect the gsub split the string by "|"
+
+2. Some customer review's title contains "//", which will affect the gsub split the string by "//"
+
+
+```{r include=FALSE}
+toys_ggplot <- toys[,3:8]
+toys_ggplot[toys_ggplot==""]<-NA
+toys_ggplot <- toys_ggplot[complete.cases(toys_ggplot[,1]),]
+
+uni_manufacturer=toys_ggplot
+#count the manufacturer
+uni_manufacturer=uni_manufacturer %>% add_count(manufacturer,sort=T,name="freq")
+
+freq_manufacturer <- uni_manufacturer[,c("manufacturer","freq")]
+freq_manufacturer<-unique(freq_manufacturer)
+```
+
+```{r}
+#extract top10 manufacturers
+top10_manufacturer <- freq_manufacturer[1:10,]
+ggplot(top10_manufacturer,aes(x=manufacturer,freq)) + geom_bar(mapping = aes(x = reorder(manufacturer,freq), fill = manufacturer),stat = "identity")+coord_flip()
+top10_manufacturer$manufacturer <- as.character(top10_manufacturer$manufacturer)
+```
+
+From CS1, manufacturers that provide top10 number of items on Amazon are LEGO, Disney, Oxford Diecase, Playmobil, Star Wars, Mattel, Hasbro, The Puppet Company, MyTinyWorld and Corgi
+
+
+## How many average number of sellers are selling the same products from each TOP10 manufactures?
+```{r, warning=FALSE}
+top10_seller_manufacturer<-sellers
+top10_seller_manufacturer<-top10_seller_manufacturer[top10_seller_manufacturer$manufacturer %in% top10_manufacturer$manufacturer,]
+#count the number of sellers for each product from each TOP10 manufacturer
+top10_seller_manufacturer = top10_seller_manufacturer %>%
+  group_by(uniq_id) %>%
+  add_count(uniq_id,sort=T,name="count_uniqid")
+top10_seller_manufacturer<-top10_seller_manufacturer[,c("manufacturer","count_uniqid")]
+top10_seller_manufacturer<-unique(top10_seller_manufacturer)
+top10_seller_manufacturer_mean <- top10_seller_manufacturer %>%
+  group_by(manufacturer) %>%
+  summarise_at(vars(count_uniqid), funs(mean(., na.rm=TRUE)))
+
+top10_seller_manufacturer_mean <- rename(top10_seller_manufacturer_mean,replace = c("count_uniqid"="product_mean_sellers"))
+top10_seller_manufacturer_mean$product_mean_sellers <- round(top10_seller_manufacturer_mean$product_mean_sellers,2)
+
+ggplot(top10_seller_manufacturer_mean,aes(x=manufacturer,product_mean_sellers)) + geom_bar(aes(x = reorder(manufacturer,product_mean_sellers),fill = manufacturer),stat = "identity")+scale_y_continuous(name = expression("average number of each product's sellers"))+coord_flip()+geom_text(data=top10_seller_manufacturer_mean,aes(x=manufacturer,y=product_mean_sellers,label=product_mean_sellers),hjust=1.5,size=2.5)
+
+top10_seller_manufacturer_all <- merge(top10_seller_manufacturer_mean,top10_manufacturer,by="manufacturer")
+
+ggplot(top10_seller_manufacturer_all,aes(group=1))+geom_bar(aes(x = reorder(manufacturer,-freq),y=freq,fill=manufacturer),stat="identity")+geom_point(mapping = aes(x = manufacturer, y = product_mean_sellers*20))+geom_line(aes(x=manufacturer, y=product_mean_sellers*20))+
+  labs(x="Top 10 Manufacturers",y="Top10 average number of sellers") + theme(axis.text.x = element_blank())
+```
+
+TOP10 manufacturers have the most top10 products on the market. "Star Wars","Playmobil","Oxford Diecast","Mattel","LEGO","Disney" have similar average sellers. But "MyTinyWorld" just has one seller per product it sells.
+
+## How many average number of sellers are selling the same products from each TOP10 category?
+```{r include=FALSE}
+top10_category=category
+top10_category[top10_category==''] <- NA
+top10_category <- top10_category[complete.cases(top10_category[,"category1"]),]
+
+#count the category1
+top10_category = top10_category %>% add_count(category1,sort=T,name="count_category1")
+top10_category$manufacturer <- as.character(top10_category$manufacturer)
+top10_category <- top10_category[,c("category1","count_category1")]
+top10_category<-unique(top10_category)
+top10_category <- top10_category[1:10,]
+```
+```{r}
+ggplot(top10_category,aes(x=category1,count_category1)) + geom_bar(mapping = aes(x = reorder(category1,count_category1), fill = category1),stat = "identity")+coord_flip() + geom_text(data=top10_category,aes(x=category1,y=count_category1,label=count_category1),hjust=1,size=3)
+```
+
+TOP10 categories are the categories that have the most top10 products on the market.
+
+From CS1, categories that provide top10 number of items on Amazon are Hobbies, Die-Cast & Toy Vehicles, Figures & Playsets,Characters & Brands,Games,Arts & Crafts,Party Supplies,Fancy Dress,Sports Toys & Outdoor,Dolls & Accessories.
+
+Next step is to calculate the average number of sellers based on these ten categories.
+```{r, warning=FALSE}
+category_sellers <- toys[,c(1:3,9,16)]
+#split the category column
+category_sellers <- separate(category_sellers,amazon_category_and_sub_category,into=c("category1","category2","category3","category4","category5"),sep=">")
+category_sellers[category_sellers==''] <- NA
+category_sellers <- category_sellers[,c(1:4,9)]
+category_sellers <- category_sellers[complete.cases(category_sellers[,4]),]
+
+
+category_sellers$sellers <- gsub('"','',category_sellers$sellers)#remove double quotation mark
+category_sellers$sellers <- str_remove(category_sellers$sellers,"\\{seller=>")
+category_sellers$sellers <- str_remove(category_sellers$sellers,"\\[")
+#split the sellers to multiple rows
+category_sellers <- tidyr::separate_rows(category_sellers,sellers,sep="\\},")
+#split the sellers column into name and price
+category_sellers <- separate(category_sellers,sellers,into=c("name","price"),sep=", Seller_price")
+#clean the columns of name and price
+category_sellers$name <- gsub('\\{.*>','',category_sellers$name)#clean the names
+category_sellers$price <- gsub('\\_.*>','',category_sellers$price) 
+category_sellers$price <- gsub('\\}','',category_sellers$price)
+category_sellers$price <- gsub('\\]','',category_sellers$price)
+category_sellers$price <- gsub('£','',category_sellers$price)
+category_sellers$manufacturer <- as.character(category_sellers$manufacturer)
+
+#count the number of sellers for each product from each TOP10 category
+category_sellers$uniq_id <- as.character(category_sellers$uniq_id)
+category_sellers = category_sellers %>%
+  group_by(uniq_id) %>%
+  add_count(uniq_id,sort=T,name="count_uniqid")
+
+category_sellers<-category_sellers[,c("category1","count_uniqid")]
+category_sellers<-unique(category_sellers)
+
+category_sellers <- aggregate(category_sellers$count_uniqid,list(category1=category_sellers$category1),mean,na.rm=T)
+category_sellers <- plyr::rename(category_sellers,c("x"="average_sellers"))
+category_sellers <- dplyr::arrange(category_sellers, desc(average_sellers))
+
+top10_category_sellers<-category_sellers
+
+top10_category_sellers <- top10_category_sellers[top10_category_sellers$category1 %in% top10_category1$category1,]
+
+top10_category_sellers$average_sellers <- round(top10_category_sellers$average_sellers,2)
+ggplot(top10_category_sellers,aes(x=category1,average_sellers)) + geom_bar(aes(x = reorder(category1,average_sellers),y=average_sellers,fill = category1),stat = "identity")+scale_y_continuous(name = expression("number of each category's sellers"))+coord_flip()+geom_text(data=top10_category_sellers,aes(x=category1,y=average_sellers,label=average_sellers),hjust=1.5,size=2.5)
+
+top10_category_all <- merge(top10_category1,top10_category_sellers,by="category1")
+
+top10_category_all<-dplyr::arrange(top10_category_all, desc(count_category1))
+
+#plot
+
+ggplot(top10_category_all,aes(group=1))+geom_bar(aes(x = reorder(category1,-count_category1),y=count_category1,fill=category1),stat="identity")+geom_point(mapping = aes(x = category1, y = average_sellers*100))+geom_line(aes(x=category1, y=average_sellers*100))+
+  labs(x="Top 10 Categories",y="Top10 average rating & sellers") + theme(axis.text.x = element_blank())
+```
+
+The bar chart represents the average number of sellers that these 10 categories have. Die-Case&ToyVehicles, the top2 munufacturer, has the most average number of sellers, while other 9 categories have the same average number of sellers.
+
+
+## Create "also_bought" data frame
+### Metadata
+manufacturer_also_bought:
+
+• count: the number of other products that customer buy from the same manufacturer(also_bought)
+
+
+
+mean_bought:
+
+• manufacturer: all unique manufacturer
+
+• mean_bought: the average number of extra items that customer buy from the same manufacturer
+
+```{r, results='hide', warning=FALSE}
+also_bought <- toys[,1:3]
+also_bought$customers_who_bought_this_item_also_bought <- toys$customers_who_bought_this_item_also_bought
+#Also_bought for each id have 12 in total. We may run 12 times in for loop to clean the data
+for (i in 1:12){
+  also_bought$customers_who_bought_this_item_also_bought <- str_remove(also_bought$customers_who_bought_this_item_also_bought, "http://www.amazon.co.uk/")
+}
+
+also_bought <- separate(also_bought,customers_who_bought_this_item_also_bought,into=c("other_product1","other_product2","other_product3","other_product4","other_product5","other_product6","other_product7","other_product8","other_product9","other_product10","other_product11","other_product12"),sep="\\|")
+
+#extract category1's name
+for (i in 4:15){
+  also_bought[,i] <- gsub('-.*','',also_bought[,i])
+  also_bought[,i] <- gsub(' ','',also_bought[,i])
+}
+```
+
+The next step is to find out whether customer buy this item also buy items from the same manufacturer.
+
+
+```{r}
+manufacturer_also_bought <- data.frame(matrix(ncol = 15, nrow = 0))
+colnames(manufacturer_also_bought) <- colnames(also_bought)
+for (i in (1:nrow(also_bought))){
+  if (also_bought[i,3] %in% also_bought[i,4:15]){
+    manufacturer_also_bought<-rbind(manufacturer_also_bought,also_bought[i,])
+  }else{
+    next
+  }
+}
+
+#select the top 10 manufacturers
+
+#Assign "NA" to missing values for 
+for (i in (4:15)){
+  manufacturer_also_bought[,i]<-tidyr::replace_na(manufacturer_also_bought[,i],"NA")
+}
+
+manufacturer_also_bought$count <- NA
+manufacturer_also_bought$manufacturer <- as.character(manufacturer_also_bought$manufacturer)
+for (i in (1:nrow(manufacturer_also_bought))){
+  manufacturer_also_bought[i,16]=0
+  for (j in (4:15)){
+    if (manufacturer_also_bought[i,3] == manufacturer_also_bought[i,j]){
+      manufacturer_also_bought[i,16]=manufacturer_also_bought[i,16]+1
+    }else{
+      next
+    }
+  }
+}
+
+manufacturer_also_bought <- manufacturer_also_bought[order(-manufacturer_also_bought$count),]
+mean_bought = aggregate(manufacturer_also_bought$count,list(manufacturer_also_bought$manufacturer),mean,na.rm=T)
+mean_bought<-rename(mean_bought,replace=c("Group.1"="manufacturer","x"="mean_bought"))
+mean_bought$mean_bought <- round(mean_bought$mean_bought,2)
+mean_bought <- dplyr::arrange(mean_bought, desc(mean_bought))
+```
+
+The result of "manufacturer_also_bought" has 2515 observations. It shows that if customers buy these products, they will be likely to buy other products from the same manufacturer as well.
+
+```{r}
+top20_mean_bought <- mean_bought[1:20,]
+top20_mean_bought
+ggplot(data=top20_mean_bought,mapping=aes(manufacturer,mean_bought))+geom_bar(mapping = aes(x = reorder(manufacturer,mean_bought), y = mean_bought, fill = manufacturer), stat = "identity")+scale_y_continuous(name = expression("mean_also_bought"))+coord_flip(ylim = c(5.60, 6))+theme(legend.key.size = unit(0.1, "cm"))
+
+```
+
+The top_20_mean_bought is sorted by the average number of customers who also buy the products from the same manufacturer. From the top20,there are 16 manufacturers that customers also buy 6 other products from the same manufacturer. The result can be considered as the factor of brand loyalty.
+
+```{r}
+#Find the manufacturers that customers buy 12 other products(the most)
+'%!in%' <- function(x,y)!('%in%'(x,y))
+for (i in (1:nrow(manufacturer_also_bought))){
+  if("NA" %!in% manufacturer_also_bought[i,4:15]){
+    print(manufacturer_also_bought[i,3])
+  }
+}
+```
+
+For manufacturer "Morphsuits","Batman","Wicked", customers also buy 12 other products. But from CS1, these manufacturers are not the ones that provide the most products on the market. So it would be better to focus on these manufacturers since customers are more likely to buy more products from them at the same time.
+
+## Dependent Variable: average_review_rating
+
+### metadata:
+toy_model1:
+
+• review_mean: the average mean of rating that selected from the "customer_reviews" column
+
+• count_also_bought: the number of other products bought
+
+• number_of_sellers: the number of sellers of each unique product
+```{r}
+#data manipulation
+toy_model1<-toys[,c(1,4:8)]
+toy_model1[toy_model1==""]<-NA
+toy_model1<-na.omit(toy_model1)
+
+review_model <- review[,c(1,4)]
+review_model$rating <- as.numeric(review_model$rating)
+
+review_model <- review_model%>%
+  group_by(uniq_id) %>%
+  dplyr::summarise(review_mean=mean(rating,na.rm=TRUE))
+
+toy_model1 <- merge(toy_model1,review_model,by="uniq_id")
+
+#create a new varaible number_of_also_bought
+also_bought_model <- also_bought[,c(1,3:15)]
+also_bought_model[also_bought_model==""]<-NA
+also_bought_model$count_also_bought <- NA
+
+#LOOP: Calculate the number of products also bought for each product
+for (i in (1:nrow(also_bought_model))){
+  also_bought_model[i,15]<-0
+  for (j in (3:14)){
+    if(is.na(also_bought_model[i,j])){
+      next
+    }else{
+      also_bought_model[i,15]<-also_bought_model[i,15]+1
+    }
+  }
+}
+also_bought_model <- also_bought_model[,c(1,15)]
+toy_model1 <- merge(toy_model1,also_bought_model,by="uniq_id")
+
+#create a new varaible number_of_sellers
+sellers_model <- sellers[-c(6277,6278),1]
+sellers_model <- data.frame(sellers_model)
+sellers_model <- rename(sellers_model,replace=c("sellers_model"="uniq_id"))
+sellers_model$uniq_id <- as.character(sellers_model$uniq_id)
+sellers_model <- sellers_model %>%
+  group_by(uniq_id) %>%
+  dplyr::summarise(number_of_sellers=n())
+
+toy_model1 <- merge(toy_model1,sellers_model,by="uniq_id")
+
+toy_model1 <- toy_model1[,-1]
+toy_model1[,5] <- as.numeric(as.character(toy_model1[,5]))
+head(toy_model1)
+```
+
+The previous steps have prepared the data for modeling(toy_model1). Next step is to calculate the correlation between the variables.
+
+```{r}
+# Correlation Analysis
+# Correlation based on all variables
+htmat <- round(cor(toy_model1),2)
+ggcorrplot(htmat,outline.color = "white",hc.order = TRUE,type = "lower",insig = "blank",lab=TRUE) + theme(axis.text.x=element_text(size=8, angle=45, vjust=1, hjust=1),
+        axis.text.y=element_text(size=10),
+        panel.grid.major=element_blank()) 
+
+# Correlation between rating and other variables
+cor_review <- round(cor(toy_model1[,-5],toy_model1$average_review_rating),2)
+cor_review <- data.frame(cor_review) 
+cor_review$variables <- row.names(cor_review)
+rownames(cor_review) <- seq.int(nrow(cor_review))
+cor_review <- rename(cor_review,replace=c('cor_review'='correlation'))
+cor_review <- dplyr::arrange(cor_review,desc(correlation))
+cor_review
+```
+
+The correlation analysis shows that these variables do not have strong correlation with average_review_rating. But the review_mean from the customer_review columns have a high correlation with the average_review_rating. Next step is to build the linear model. 
+
+```{r}
+#Modeling
+model1<-lm(toy_model1$average_review_rating~.,data=toy_model1)
+summary(model1)
+```
+
+The model result shows that "number_available_in_stock","review_mean","count_also_bought " and 
+"number_of_sellers" are significant to the model. The R-squared is 0.8049. 
+
+Next step is to divide the data into training and testing sets, build the model based on training set with model selection. The testing data set is used for validating the model.
+
+```{r}
+#set the seed to make train and test sets
+#training set:99% of the sample size
+smp_size <- floor(0.99 * nrow(toy_model1))
+set.seed(123)
+train_ind <- sample(seq_len(nrow(toy_model1)), size = smp_size)
+
+train <- toy_model1[train_ind, ]
+test <- toy_model1[-train_ind, ]
+
+model2<-lm(train$average_review_rating~.,data=train)
+step.model2<-stepAIC(model2,direction="both",trace=FALSE)
+summary(step.model2)
+VIF(step.model2)
+length(coef(step.model2))-1
+coef_model2 <- coef(step.model2)
+coef_model2 <- data.frame(coef_model2)
+row.names(coef_model2)[-1] #all variables in the model
+
+#Validate the model
+testdata <- predict(step.model2,test)
+testdata<-data.frame(testdata)
+testdata$data_attribute <- "predict"
+rownames(testdata) <- seq.int(nrow(testdata))
+testdata$index <- row.names(testdata)
+#testdata <- rename(testdata,replace=c("testdata"="value"))
+
+actual_value <- test$average_review_rating
+actual_value<-data.frame(actual_value)
+colnames(actual_value) <- "testdata"
+actual_value$data_attribute <- "actual_value"
+actual_value$index <- row.names(actual_value)
+
+test_result <- rbind(actual_value,testdata)
+
+ggplot(test_result,aes(index,testdata))+geom_point(aes(colour=data_attribute))+ ggtitle("Linear Regression Result")+theme(axis.title.x=element_blank(),axis.text.x=element_blank(),axis.ticks.x=element_blank(),plot.title=element_text(hjust=0.4))
+
+RMSE <- rmse(test_result[1:59,1],test_result[60:118,1])
+RMSE
+```
+
+The horizontal line of the scatter plot stands for each observation with its actual value and predicting value. The result shows that some of the actual value and predicting value are similar for each observation, except for predicting accurate some low rating.
+
+The RMSE is 0.17 and the VIF value shows that the model does not have multicolinearity. The next step is to analyse the residuals based on QQplot.
+
+```{r}
+x<-1:5800
+plot(step.model2$residuals~x,
+     main="Residuals\nfor Linear Regression",
+     xlab="Number of Observation", ylab="Residuals",col = "light green")
+#the mean of residuals is close to zero
+qqnorm(step.model2$residuals)
+
+```
+
+99% of the rawdata has been used for training data set. After the model selection(Forward/Backward/Stepwise), the summary result shows that the R-squared is 0.8054 and the variables inside the model are the same as the previous one. The model selects "number_available_in_stock","review_mean","count_also_bought " and "number_of_sellers" as predictor variables. The VIF result also shows that these variables do not have multicolinearity issues. 
+
+Even though the scatter plot shows that some prediction values are close to the actual values, the model's residuals do not fit the assumptions of ideal linear regression. QQplot shows that the residuals are not normally distributed. The possible reason is that the predictor variables do not have high correaltion with average_review_rating. 
+
+
+## Summary & Conclusion
+
+### Programming:
+Function and Loop:
+
+To count the number of sellers as well as the number of also_bought, the Loop function has been conducted in this case study to iterate every row and every column. At the same time, Loop is also used to run some specific procedures multiple times to apply the "gsub" function for data cleaning.
+
+
+### Modeling:
+This case study uses linear regression and model selection. The model is built based on 99% of the rawdata as training data set. Then the rest data is used for validating the data and comparing the predictive results with the actual value.
+
+
+### Business Solution:
+
+• For manufacturer "Morphsuits","Batman","Wicked", customers also buy 12 other products. But from CS1, these manufacturers are not the ones that provide the most products on the market. So it would be better to focus on these manufacturers since customers are more likely to buy more products from them at the same time.
+
+• TOP10 manufacturers sell the most top10 products on the market. "Star Wars","Playmobil","Oxford Diecast","Mattel","LEGO","Disney" have similar average sellers. But "MyTinyWorld" just has one seller per product it sells. For increasing popularity of "MyTinyWorld" toys, the manufacturers can look for more sellers to increase sales.
+
+• TOP10 categories are the categories that sell the most top10 products on the market. "Die-Case&ToyVehicles", the top2 munufacturer, has the most average number of sellers, while other 9 categories have the same average number of sellers. "Die-Case&ToyVehicles" is possible to have the most products in the market since it has more sellers than others to increase sales.
+
